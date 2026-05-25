@@ -1,0 +1,9 @@
+competitors:
+  - name: "Конкурент 1"
+    website_news: "https://example.com/news"
+    telegram: "https://t.me/example"
+    youtube: "https://www.youtube.com/@example"
+
+  - name: "Конкурент 2"
+    website_news: "https://example.org/news"
+    telegram: "https://t.me/example2"
