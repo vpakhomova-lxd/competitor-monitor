@@ -3,3 +3,4 @@ PyYAML
 requests
 feedparser
 python-dotenv
+beautifulsoup4
