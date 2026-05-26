@@ -1,12 +1,29 @@
-import os
-from datetime import datetime
+import re
+from datetime import datetime, date
 from urllib.parse import urljoin
 
-import feedparser
 import requests
 import yaml
 from bs4 import BeautifulSoup
-from openai import OpenAI
+
+
+START_DATE = date(2026, 6, 1)
+
+
+MONTHS_RU = {
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
+}
 
 
 def load_competitors():
@@ -16,58 +33,46 @@ def load_competitors():
     return data.get("competitors", [])
 
 
-def guess_rss_urls(page_url):
-    return [
-        page_url,
-        urljoin(page_url, "/feed"),
-        urljoin(page_url, "/rss"),
-        urljoin(page_url, "/rss.xml"),
-        urljoin(page_url, "/feed.xml"),
-        urljoin(page_url, "/atom.xml"),
-    ]
+def parse_russian_date(text):
+    text = text.lower()
+
+    # Формат: 1 июня 2026
+    match = re.search(
+        r"(\d{1,2})\s+"
+        r"(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
+        r"(?:\s+(\d{4}))?",
+        text,
+    )
+
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month = MONTHS_RU[match.group(2)]
+    year = int(match.group(3)) if match.group(3) else START_DATE.year
+
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
-def fetch_feed_items(url):
-    possible_urls = guess_rss_urls(url)
-
-    for feed_url in possible_urls:
-        print(f"Trying feed: {feed_url}")
-
-        feed = feedparser.parse(feed_url)
-
-        if feed.entries:
-            print(f"Found feed: {feed_url}")
-            items = []
-
-            for entry in feed.entries[:5]:
-                items.append({
-                    "title": entry.get("title", "No title"),
-                    "link": entry.get("link", ""),
-                    "published": entry.get("published", "No date"),
-                    "summary": entry.get("summary", ""),
-                    "source_type": "rss",
-                })
-
-            return feed_url, items
-
-    return None, []
-
-
-def fetch_html_items(page_url):
-    print(f"Trying HTML page: {page_url}")
-
+def fetch_html(url):
     headers = {
         "User-Agent": "Mozilla/5.0 compatible; competitor-monitor/1.0"
     }
 
-    try:
-        response = requests.get(page_url, headers=headers, timeout=20)
-        response.raise_for_status()
-    except Exception as error:
-        print(f"HTML fetch failed: {error}")
-        return []
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    return response.text
+
+
+def extract_event_candidates(page_url):
+    print(f"Reading schedule page: {page_url}")
+
+    html = fetch_html(page_url)
+    soup = BeautifulSoup(html, "html.parser")
 
     candidates = []
 
@@ -75,155 +80,113 @@ def fetch_html_items(page_url):
         "article",
         ".event",
         ".events",
-        ".news",
+        ".event-card",
+        ".event-item",
+        ".schedule-item",
+        ".afisha-item",
         ".item",
-        ".post",
         ".card",
         "li",
+        "tr",
     ]
 
     for selector in selectors:
         blocks = soup.select(selector)
 
         for block in blocks:
-            link_tag = block.find("a", href=True)
-            if not link_tag:
-                continue
-
-            title = link_tag.get_text(" ", strip=True)
-            href = link_tag.get("href")
-            link = urljoin(page_url, href)
-
             text = block.get_text(" ", strip=True)
-
-            if len(title) < 5:
-                continue
 
             if len(text) < 20:
                 continue
 
+            event_date = parse_russian_date(text)
+
+            if not event_date:
+                continue
+
+            if event_date < START_DATE:
+                continue
+
+            link_tag = block.find("a", href=True)
+            link = urljoin(page_url, link_tag["href"]) if link_tag else page_url
+
+            title = ""
+
+            if link_tag:
+                title = link_tag.get_text(" ", strip=True)
+
+            if not title or len(title) < 5:
+                title = text[:160]
+
             candidates.append({
-                "title": title[:200],
+                "date": event_date,
+                "title": title,
                 "link": link,
-                "published": "No date",
-                "summary": text[:1000],
-                "source_type": "html",
+                "text": text[:500],
             })
 
-    unique_items = []
-    seen_links = set()
+    unique = []
+    seen = set()
 
     for item in candidates:
-        if item["link"] in seen_links:
+        key = (item["date"], item["link"], item["title"])
+
+        if key in seen:
             continue
 
-        seen_links.add(item["link"])
-        unique_items.append(item)
+        seen.add(key)
+        unique.append(item)
 
-    return unique_items[:5]
+    unique.sort(key=lambda item: item["date"])
 
-
-def analyze_with_openai(competitor_name, item):
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        return "OPENAI_API_KEY was not found"
-
-    title = item.get("title", "")
-    link = item.get("link", "")
-    summary = item.get("summary", "")
-
-    prompt = f"""
-Ты аналитик конкурентной разведки.
-
-Проанализируй публикацию конкурента.
-
-Конкурент: {competitor_name}
-Заголовок: {title}
-Ссылка: {link}
-Текст: {summary}
-
-Определи, похоже ли это на новинку: новая услуга, новый продукт, новое мероприятие, новая цена, новый формат, новая локация, новый партнёр или новая рекламная кампания.
-
-Ответь коротко на русском в таком формате:
-
-Новинка: да/нет
-Категория: ...
-Кратко: ...
-Цена: ...
-Рекомендация: ...
-"""
-
-    try:
-        client = OpenAI(api_key=api_key)
-
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-        )
-
-        return response.output_text
-
-    except Exception as error:
-        return f"OpenAI analysis skipped/failed: {error}"
+    return unique
 
 
 def main():
-    print("Competitor monitor started")
+    print("Competitor event monitor started")
     print(f"Run time: {datetime.now().isoformat()}")
+    print(f"Collecting events from: {START_DATE.isoformat()}")
 
     competitors = load_competitors()
     print(f"Competitors loaded: {len(competitors)}")
+
+    total_events = 0
 
     for competitor in competitors:
         name = competitor.get("name")
         website_news = competitor.get("website_news")
 
         print("")
-        print("=" * 60)
+        print("=" * 80)
         print(f"Competitor: {name}")
 
         if not website_news:
             print("No website_news URL configured")
             continue
 
-        print(f"Website/news URL: {website_news}")
-
-        feed_url, items = fetch_feed_items(website_news)
-
-        if items:
-            print(f"Items found via RSS: {len(items)}")
-            print(f"Source feed: {feed_url}")
-        else:
-            print("No RSS/feed items found. Trying HTML parsing...")
-            items = fetch_html_items(website_news)
-            print(f"Items found via HTML: {len(items)}")
-
-        if not items:
-            print("No items found for this competitor")
+        try:
+            events = extract_event_candidates(website_news)
+        except Exception as error:
+            print(f"Failed to read page: {error}")
             continue
 
-        for index, item in enumerate(items, start=1):
-            title = item.get("title", "No title")
-            link = item.get("link", "No link")
-            published = item.get("published", "No date")
-            source_type = item.get("source_type", "unknown")
+        if not events:
+            print("No future events found from 1 June")
+            continue
 
+        print(f"Future events found: {len(events)}")
+        total_events += len(events)
+
+        for event in events:
             print("")
             print("-" * 40)
-            print(f"Item {index}")
-            print(f"Source type: {source_type}")
-            print(f"Title: {title}")
-            print(f"Published: {published}")
-            print(f"Link: {link}")
-
-            analysis = analyze_with_openai(name, item)
-
-            print("")
-            print("Analysis:")
-            print(analysis)
+            print(f"Date: {event['date'].isoformat()}")
+            print(f"Title: {event['title']}")
+            print(f"Link: {event['link']}")
 
     print("")
+    print("=" * 80)
+    print(f"Total future events found: {total_events}")
     print("Done")
 
 
