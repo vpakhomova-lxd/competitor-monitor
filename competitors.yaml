@@ -1,9 +1,20 @@
 competitors:
-  - name: "Конкурент 1"
-    website_news: "https://example.com/news"
-    telegram: "https://t.me/example"
-    youtube: "https://www.youtube.com/@example"
+  - name: "Петербург глазами инженера"
+    website_news: "https://spb.engineer-history.ru/events.php"
+    website_moscow_news: "https://engineer-history.ru/all-tours.html"
+    telegram: "https://t.me/engineer_history_spb"
+    telegram_moscow: "https://t.me/engineerhistory"
 
-  - name: "Конкурент 2"
-    website_news: "https://example.org/news"
-    telegram: "https://t.me/example2"
+  - name: "Дарья Павленко"
+    website_news: "https://dariapavlenko.ru/raspisanie"
+    telegram: "https://t.me/spb_syndrome"
+
+  - name: "Masters"
+    website_news: "https://masters-project.ru/catalog/events/"
+    website_news: "https://masters-project.ru/catalog/events/?format[0]=60"
+    telegram: "https://t.me/artmastersmoscow"
+    telegram: "https://t.me/artschoolmasters"
+
+  - name: "Прямая речь"
+    website_news: "https://www.pryamaya.ru/"
+    telegram: "https://t.me/pryamaya"
