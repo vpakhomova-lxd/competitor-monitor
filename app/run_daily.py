@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 import feedparser
 import requests
 import yaml
+from bs4 import BeautifulSoup
 from openai import OpenAI
 
 
@@ -36,21 +37,97 @@ def fetch_feed_items(url):
 
         if feed.entries:
             print(f"Found feed: {feed_url}")
-            return feed_url, feed.entries[:5]
+            items = []
+
+            for entry in feed.entries[:5]:
+                items.append({
+                    "title": entry.get("title", "No title"),
+                    "link": entry.get("link", ""),
+                    "published": entry.get("published", "No date"),
+                    "summary": entry.get("summary", ""),
+                    "source_type": "rss",
+                })
+
+            return feed_url, items
 
     return None, []
+
+
+def fetch_html_items(page_url):
+    print(f"Trying HTML page: {page_url}")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 compatible; competitor-monitor/1.0"
+    }
+
+    try:
+        response = requests.get(page_url, headers=headers, timeout=20)
+        response.raise_for_status()
+    except Exception as error:
+        print(f"HTML fetch failed: {error}")
+        return []
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    candidates = []
+
+    selectors = [
+        "article",
+        ".event",
+        ".events",
+        ".news",
+        ".item",
+        ".post",
+        ".card",
+        "li",
+    ]
+
+    for selector in selectors:
+        blocks = soup.select(selector)
+
+        for block in blocks:
+            link_tag = block.find("a", href=True)
+            if not link_tag:
+                continue
+
+            title = link_tag.get_text(" ", strip=True)
+            href = link_tag.get("href")
+            link = urljoin(page_url, href)
+
+            text = block.get_text(" ", strip=True)
+
+            if len(title) < 5:
+                continue
+
+            if len(text) < 20:
+                continue
+
+            candidates.append({
+                "title": title[:200],
+                "link": link,
+                "published": "No date",
+                "summary": text[:1000],
+                "source_type": "html",
+            })
+
+    unique_items = []
+    seen_links = set()
+
+    for item in candidates:
+        if item["link"] in seen_links:
+            continue
+
+        seen_links.add(item["link"])
+        unique_items.append(item)
+
+    return unique_items[:5]
 
 
 def analyze_with_openai(competitor_name, item):
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
-        return {
-            "is_new": "unknown",
-            "category": "no_api_key",
-            "summary": "OPENAI_API_KEY was not found",
-            "recommendation": "Добавьте OPENAI_API_KEY в GitHub Secrets.",
-        }
+        return "OPENAI_API_KEY was not found"
 
     title = item.get("title", "")
     link = item.get("link", "")
@@ -85,20 +162,10 @@ def analyze_with_openai(competitor_name, item):
             input=prompt,
         )
 
-        return {
-            "is_new": "analyzed",
-            "category": "openai",
-            "summary": response.output_text,
-            "recommendation": "",
-        }
+        return response.output_text
 
     except Exception as error:
-        return {
-            "is_new": "error",
-            "category": "openai_error",
-            "summary": str(error),
-            "recommendation": "Проверьте API key, billing и доступность модели.",
-        }
+        return f"OpenAI analysis skipped/failed: {error}"
 
 
 def main():
@@ -124,22 +191,28 @@ def main():
 
         feed_url, items = fetch_feed_items(website_news)
 
-        if not items:
-            print("No RSS/feed items found for this competitor")
-            print("Later we can add normal website parsing for pages without RSS.")
-            continue
+        if items:
+            print(f"Items found via RSS: {len(items)}")
+            print(f"Source feed: {feed_url}")
+        else:
+            print("No RSS/feed items found. Trying HTML parsing...")
+            items = fetch_html_items(website_news)
+            print(f"Items found via HTML: {len(items)}")
 
-        print(f"Items found: {len(items)}")
-        print(f"Source feed: {feed_url}")
+        if not items:
+            print("No items found for this competitor")
+            continue
 
         for index, item in enumerate(items, start=1):
             title = item.get("title", "No title")
             link = item.get("link", "No link")
             published = item.get("published", "No date")
+            source_type = item.get("source_type", "unknown")
 
             print("")
             print("-" * 40)
             print(f"Item {index}")
+            print(f"Source type: {source_type}")
             print(f"Title: {title}")
             print(f"Published: {published}")
             print(f"Link: {link}")
@@ -148,7 +221,7 @@ def main():
 
             print("")
             print("Analysis:")
-            print(analysis["summary"])
+            print(analysis)
 
     print("")
     print("Done")
